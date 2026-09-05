@@ -1,0 +1,20 @@
+name: build-sim
+
+services:
+  backend:
+    image: ghcr.io/dwilson2547/build-sim-backend:latest
+    build: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      BUILD_SIM_DB: /data/build_sim.db
+
+  frontend:
+    image: ghcr.io/dwilson2547/build-sim-frontend:latest
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "8087:80"
+    depends_on:
+      - backend
