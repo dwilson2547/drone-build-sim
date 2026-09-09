@@ -27,14 +27,61 @@ HOVER_CEILING_PCT = 85.0  # throttle ceiling used for spare-lift calc
 # Curve columns
 C_THR, C_GRAMS, C_AMPS, C_WATTS = 0, 1, 2, 3
 
+# A bench point is (throttle%, grams, amps, watts).
+Point = tuple[float, float, float, float]
+
+
+@dataclass
+class PropCurve:
+    """One bench sweep: a motor swinging a specific prop at a specific voltage.
+
+    `test_volts` is the pack voltage the sweep was actually measured at. Vendor
+    datasheets state it (iFlight benches 6S motors at 24.0V = 4.0V/cell, not the
+    3.7V/cell `NOMINAL_V` assumes), and getting it wrong biases every current —
+    and therefore every flight-time — estimate. None means "unknown, fall back
+    to the old rated_cells * NOMINAL_V assumption".
+    """
+
+    prop: str
+    points: list[Point]
+    test_volts: float | None = None
+    source: str = "seed"          # seed | tmotor-html | iflight-datasheet
+    source_url: str = ""
+    harvested_at: str = ""
+
+    def rated_volts(self, rated_cells: int) -> float:
+        return self.test_volts if self.test_volts else rated_cells * NOMINAL_V
+
 
 @dataclass
 class Motor:
     name: str
     rated_cells: int
     mass_g: float
-    curve: list[tuple[float, float, float, float]]  # (thr%, grams, amps, watts) @ rated voltage
+    curves: list[PropCurve]
     props: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Accept the legacy shape — a bare list of (thr, g, a, w) points — so
+        # callers that predate per-prop curves keep working.
+        if self.curves and not isinstance(self.curves[0], PropCurve):
+            self.curves = [PropCurve(prop="", points=[tuple(p) for p in self.curves])]
+        if not self.props:
+            self.props = [c.prop for c in self.curves if c.prop]
+
+    def curve_for(self, prop: str | None = None) -> PropCurve:
+        """The sweep for `prop`, or the first (default) sweep when unspecified."""
+        if prop:
+            for c in self.curves:
+                if c.prop == prop:
+                    return c
+            raise KeyError(f"motor '{self.name}' has no curve for prop '{prop}'")
+        return self.curves[0]
+
+    @property
+    def curve(self) -> list[Point]:
+        """Points of the default sweep. Retained for existing callers."""
+        return self.curves[0].points
 
 
 @dataclass
@@ -114,22 +161,24 @@ class OperatingPoint:
 
 
 def operating_point(motor: Motor, pack: Pack, n_motors: int, throttle: float,
-                    coax: bool, soc_v: float = NOMINAL_V, iterations: int = 12) -> OperatingPoint:
+                    coax: bool, soc_v: float = NOMINAL_V, iterations: int = 12,
+                    prop: str | None = None) -> OperatingPoint:
     """Solve the sagged operating point at a given throttle.
 
     Fixed-point: guess per-cell voltage -> scale thrust/amps from the bench
-    curve (measured at rated voltage) -> pack current -> IR sag -> new voltage.
+    curve (measured at the sweep's own test voltage) -> pack current -> IR sag
+    -> new voltage.
     """
-    v_rated = motor.rated_cells * NOMINAL_V
+    pc = motor.curve_for(prop)
+    pts = pc.points
+    v_rated = pc.rated_volts(motor.rated_cells)
     ir_pack = pack.ir_mohm_per_cell * pack.cells / 1000.0  # ohms
     v_cell = soc_v
     coax_f = COAX_FACTOR if coax else 1.0
 
     for _ in range(iterations):
-        scale = _voltage_scale(v_cell * pack.cells, v_rated)
-        per_motor_thrust = thrust_g(motor.curve, throttle) * scale
         # current scales ~linearly with voltage at fixed throttle duty
-        per_motor_amps = amps(motor.curve, throttle) * (v_cell * pack.cells / v_rated)
+        per_motor_amps = amps(pts, throttle) * (v_cell * pack.cells / v_rated)
         i_total = n_motors * per_motor_amps
         v_pack = soc_v * pack.cells - i_total * ir_pack
         v_cell_new = max(v_pack / pack.cells, CUTOFF_V)
@@ -139,8 +188,8 @@ def operating_point(motor: Motor, pack: Pack, n_motors: int, throttle: float,
         v_cell = v_cell_new
 
     scale = _voltage_scale(v_cell * pack.cells, v_rated)
-    thrust_total = n_motors * thrust_g(motor.curve, throttle) * scale * coax_f
-    i_total = n_motors * amps(motor.curve, throttle) * (v_cell * pack.cells / v_rated)
+    thrust_total = n_motors * thrust_g(pts, throttle) * scale * coax_f
+    i_total = n_motors * amps(pts, throttle) * (v_cell * pack.cells / v_rated)
     watts_total = i_total * v_cell * pack.cells
     return OperatingPoint(throttle, v_cell, thrust_total, i_total, watts_total)
 
@@ -164,17 +213,21 @@ class BuildResult:
     frame_class: str
     pack_chemistry: str
     warnings: list[str]
+    prop: str = ""
+    curve_source: str = ""
+    test_volts: float | None = None
 
 
 def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
-             rigging_g: float = BASE_RIGGING_G) -> BuildResult:
+             rigging_g: float = BASE_RIGGING_G, prop: str | None = None) -> BuildResult:
     n = frame.motors
     coax = frame.coax
+    pc = motor.curve_for(prop)   # raises early on an unknown prop
     auw = n * motor.mass_g + frame.mass_g + pack.mass_g + payload.mass_g + rigging_g
     cell_mismatch = abs(pack.cells - motor.rated_cells)
 
     # Max thrust / TWR at full charge (4.2V/cell) with sag
-    full = operating_point(motor, pack, n, 100.0, coax, soc_v=FULL_V)
+    full = operating_point(motor, pack, n, 100.0, coax, soc_v=FULL_V, prop=prop)
     max_thrust = full.thrust_total_g
     twr = max_thrust / auw
 
@@ -186,13 +239,13 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         lo, hi = 1.0, 100.0
         for _ in range(40):
             mid = (lo + hi) / 2
-            pt = operating_point(motor, pack, n, mid, coax)
+            pt = operating_point(motor, pack, n, mid, coax, prop=prop)
             if pt.thrust_total_g >= auw:
                 hi = mid
             else:
                 lo = mid
         hover_thr = hi
-        hover_pt = operating_point(motor, pack, n, hover_thr, coax)
+        hover_pt = operating_point(motor, pack, n, hover_thr, coax, prop=prop)
         can_hover = True
 
     pack_wh = (pack.mah / 1000.0) * pack.cells * NOMINAL_V
@@ -211,13 +264,18 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
     # Spare lift: extra grams before the sagged hover point hits the ceiling
     carry_g = 0.0
     if can_hover:
-        ceil_pt = operating_point(motor, pack, n, HOVER_CEILING_PCT, coax)
+        ceil_pt = operating_point(motor, pack, n, HOVER_CEILING_PCT, coax, prop=prop)
         carry_g = max(0.0, ceil_pt.thrust_total_g - auw)
 
     warnings: list[str] = []
     sub250 = auw < 250
     if not can_hover:
         warnings.append("Cannot hover — thrust never exceeds weight. Lighter pack or bigger motors.")
+    if pc.test_volts is None:
+        warnings.append(
+            "Bench voltage for this curve is unknown — assumed 3.7V/cell. "
+            "Current and flight time are approximate."
+        )
     if cell_mismatch >= 2:
         warnings.append(
             f"Pack is {cell_mismatch}S off the motor's rated voltage — numbers extrapolated, treat as rough."
@@ -239,4 +297,5 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         carry_g=carry_g, n_motors=n, cell_mismatch=cell_mismatch,
         sub250=sub250, frame_class=frame.frame_class,
         pack_chemistry=pack.chemistry, warnings=warnings,
+        prop=pc.prop, curve_source=pc.source, test_volts=pc.test_volts,
     )

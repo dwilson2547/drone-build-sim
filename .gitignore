@@ -3,5 +3,10 @@ dist/
 .venv/
 __pycache__/
 *.pyc
-data/
+# runtime DB volume (docker-compose mounts ./data); anchored so it does
+# NOT also match backend/app/data, which holds the committed parts library
+/data/
 build_sim.db
+
+# harvest response cache — regenerable, never committed
+.harvest-cache/

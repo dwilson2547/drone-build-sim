@@ -1,47 +1,23 @@
-"""Seed parts library, ported from the original drone-sim.jsx.
+"""Parts library.
 
-Thrust curves are per-motor at the rated cell count, from published bench
-tests / listing charts. IR values are typical per-cell internal resistance
-for the chemistry/format — refine with measured values over time.
+Motors are loaded from `data/motors.json` (see MOTORS below). Frames, packs and
+payloads are still hand-maintained literals — no vendor publishes them in a form
+worth scraping. IR values are typical per-cell internal resistance for the
+chemistry/format; refine with measured values over time.
 """
 
-MOTORS = [
-    {
-        "id": "0802_19000kv", "name": "0802 19000KV (whoop)", "rated_cells": 1, "mass_g": 3.2,
-        "props": ["31mm"],
-        "curve": [(25, 3, 0.35, 1.1), (50, 8, 1.1, 4.1), (75, 16, 2.6, 9.6), (100, 26, 4.8, 17.8)],
-    },
-    {
-        "id": "1404_4600kv", "name": "1404 4600KV", "rated_cells": 4, "mass_g": 9.5,
-        "props": ['3"', '3.5"'],
-        "curve": [(25, 38, 0.7, 8), (50, 95, 2.4, 36), (75, 180, 6.0, 89), (100, 310, 12.5, 185)],
-    },
-    {
-        "id": "1404_3000kv", "name": "1404 3000KV (LR)", "rated_cells": 4, "mass_g": 9.5,
-        "props": ['4"', '4.5"'],
-        "curve": [(25, 34, 0.5, 6), (50, 85, 1.8, 27), (75, 165, 4.6, 68), (100, 275, 9.2, 136)],
-    },
-    {
-        "id": "1804_2450kv", "name": "1804 2450KV", "rated_cells": 4, "mass_g": 12,
-        "props": ['4"', '4.5"'],
-        "curve": [(25, 92, 0.85, 10), (50, 230, 3.0, 44), (75, 470, 7.6, 112), (100, 780, 15.0, 222)],
-    },
-    {
-        "id": "2004_1800kv", "name": "2004 1800KV", "rated_cells": 6, "mass_g": 15,
-        "props": ['5"'],
-        "curve": [(25, 130, 1.2, 26), (50, 320, 4.2, 93), (75, 640, 10.5, 233), (100, 1050, 21.0, 466)],
-    },
-    {
-        "id": "2207_1750kv", "name": "2207 1750KV (freestyle)", "rated_cells": 6, "mass_g": 32,
-        "props": ['5"'],
-        "curve": [(25, 195, 1.9, 40), (50, 480, 6.5, 144), (75, 980, 16.0, 355), (100, 1700, 34.0, 755)],
-    },
-    {
-        "id": "3115_900kv", "name": "3115 900KV (GF1050)", "rated_cells": 6, "mass_g": 95,
-        "props": ['10"'],
-        "curve": [(25, 580, 3.2, 78), (50, 1420, 11.4, 300), (70, 2500, 28, 710), (100, 4080, 62.7, 1600)],
-    },
-]
+import json
+from pathlib import Path
+
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+# The motor library is data, not code: regenerated from vendor datasheets by
+# tools/harvest_tmotor.py and committed as JSON. Hand-seeded entries (the FPV
+# sizes no vendor publishes an HTML table for) live in the same file with
+# "source": "seed" and survive a re-harvest.
+MOTORS = json.loads((DATA_DIR / "motors.json").read_text(encoding="utf-8"))
+
 
 FRAMES = [
     {"id": "reliant_y6", "name": "Reliant Y6 (sub250)", "mass_g": 42, "motors": 6, "coax": True, "frame_class": "sub250"},

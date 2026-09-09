@@ -36,6 +36,7 @@ class SimulateRequest(BaseModel):
     frame_id: str
     pack_id: str
     payload_id: str
+    prop: str | None = None   # which bench sweep to use; None = the motor's first
 
 
 class BuildRequest(SimulateRequest):
@@ -57,7 +58,10 @@ def run_sim(conn, req: SimulateRequest) -> dict:
         payload = db.get_payload(conn, req.payload_id)
     except KeyError as e:
         raise HTTPException(404, f"unknown part: {e}")
-    return asdict(simulate(motor, frame, pack, payload))
+    try:
+        return asdict(simulate(motor, frame, pack, payload, prop=req.prop))
+    except KeyError as e:
+        raise HTTPException(400, f"unknown prop: {e}")
 
 
 @app.get("/api/health")

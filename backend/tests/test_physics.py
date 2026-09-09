@@ -114,3 +114,81 @@ def test_cell_mismatch_warning():
     r = simulate(m, QUAD, make_pack(cells=6), P0)
     assert r.cell_mismatch == 2
     assert any("rated voltage" in w for w in r.warnings)
+
+
+# --- per-prop curves and explicit bench voltage -----------------------------
+
+from app.physics import PropCurve  # noqa: E402
+
+
+def _pts(k):
+    return [(t, k * t * t, 0.002 * t * t, 0.0003 * t ** 3) for t in (25, 50, 75, 100)]
+
+
+def make_multiprop_motor():
+    return Motor("multi", 6, 30.0, [
+        PropCurve(prop='5"', points=_pts(0.04), test_volts=24.0),
+        PropCurve(prop='6"', points=_pts(0.06), test_volts=24.0),
+    ])
+
+
+def test_curve_for_selects_by_prop():
+    m = make_multiprop_motor()
+    assert thrust_g(m.curve_for('5"').points, 100) < thrust_g(m.curve_for('6"').points, 100)
+
+
+def test_curve_for_defaults_to_first_curve():
+    m = make_multiprop_motor()
+    assert m.curve_for().prop == '5"'
+    assert m.curve == m.curve_for('5"').points
+
+
+def test_unknown_prop_raises():
+    import pytest
+    with pytest.raises(KeyError):
+        make_multiprop_motor().curve_for('99"')
+
+
+def test_bigger_prop_lifts_more_in_a_full_sim():
+    m = make_multiprop_motor()
+    small = simulate(m, QUAD, make_pack(cells=6), P0, prop='5"')
+    big = simulate(m, QUAD, make_pack(cells=6), P0, prop='6"')
+    assert big.max_thrust_g > small.max_thrust_g
+    assert big.prop == '6"'
+
+
+def test_legacy_bare_curve_is_still_accepted():
+    """Callers predating per-prop curves pass a plain list of points."""
+    m = Motor("legacy", 4, 10.0, _pts(0.04), [])
+    assert len(m.curves) == 1
+    assert isinstance(m.curves[0], PropCurve)
+    assert m.curves[0].test_volts is None
+    assert math.isclose(thrust_g(m.curve, 50), 0.04 * 50 * 50, rel_tol=1e-9)
+
+
+def test_stated_bench_voltage_changes_current_estimate():
+    """A 6S motor benched at 24.0V is not the same as one assumed at 3.7V/cell.
+
+    Assuming 22.2V where the sweep actually ran at 24.0V inflates every current
+    by ~8%, which lands directly on flight time.
+    """
+    pts = _pts(0.04)
+    stated = Motor("stated", 6, 30.0, [PropCurve('5"', pts, test_volts=24.0)])
+    assumed = Motor("assumed", 6, 30.0, [PropCurve('5"', pts, test_volts=None)])
+    pack = make_pack(cells=6, ir=0.0)
+
+    a_stated = operating_point(stated, pack, 4, 70.0, coax=False).current_total_a
+    a_assumed = operating_point(assumed, pack, 4, 70.0, coax=False).current_total_a
+
+    assert a_stated < a_assumed
+    assert math.isclose(a_stated / a_assumed, (6 * NOMINAL_V) / 24.0, rel_tol=1e-6)
+
+
+def test_unknown_bench_voltage_warns():
+    m = Motor("assumed", 4, 10.0, _pts(0.04), [])
+    r = simulate(m, QUAD, make_pack(), P0)
+    assert any("Bench voltage" in w for w in r.warnings)
+
+    known = Motor("known", 4, 10.0, [PropCurve('5"', _pts(0.04), test_volts=14.8)])
+    r2 = simulate(known, QUAD, make_pack(), P0)
+    assert not any("Bench voltage" in w for w in r2.warnings)

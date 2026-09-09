@@ -9,14 +9,14 @@ import time
 from pathlib import Path
 
 from . import parts_data
-from .physics import Frame, Motor, Pack, Payload
+from .physics import Frame, Motor, Pack, Payload, PropCurve
 
 DB_PATH = Path(os.environ.get("BUILD_SIM_DB", Path(__file__).resolve().parent.parent / "build_sim.db"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS motors (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, rated_cells INTEGER NOT NULL,
-    mass_g REAL NOT NULL, props TEXT NOT NULL DEFAULT '[]', curve TEXT NOT NULL
+    mass_g REAL NOT NULL, props TEXT NOT NULL DEFAULT '[]', curves TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS frames (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, mass_g REAL NOT NULL,
@@ -55,10 +55,26 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _seed(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Rebuild the parts tables when their shape is stale.
+
+    Parts are derived data — they are re-seeded from parts_data on every empty
+    boot — so the cheapest correct migration is to drop and recreate them. Saved
+    builds and calibration actuals are the user's own work and are never touched;
+    a build that referenced a since-renamed motor keeps its stored result_json.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(motors)")}
+    if cols and "curves" not in cols:
+        for t in ("motors", "frames", "packs", "payloads"):
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        conn.executescript(SCHEMA)
 
 
 def _seed(conn: sqlite3.Connection) -> None:
@@ -67,7 +83,8 @@ def _seed(conn: sqlite3.Connection) -> None:
     for m in parts_data.MOTORS:
         conn.execute(
             "INSERT INTO motors VALUES (?,?,?,?,?,?)",
-            (m["id"], m["name"], m["rated_cells"], m["mass_g"], json.dumps(m["props"]), json.dumps(m["curve"])),
+            (m["id"], m["name"], m["rated_cells"], m["mass_g"],
+             json.dumps(m["props"]), json.dumps(m["curves"])),
         )
     for f in parts_data.FRAMES:
         conn.execute(
@@ -87,8 +104,18 @@ def get_motor(conn, mid: str) -> Motor:
     r = conn.execute("SELECT * FROM motors WHERE id=?", (mid,)).fetchone()
     if not r:
         raise KeyError(f"motor '{mid}'")
-    curve = [tuple(p) for p in json.loads(r["curve"])]
-    return Motor(r["name"], r["rated_cells"], r["mass_g"], curve, json.loads(r["props"]))
+    curves = [
+        PropCurve(
+            prop=c["prop"],
+            points=[tuple(p) for p in c["points"]],
+            test_volts=c.get("test_volts"),
+            source=c.get("source", ""),
+            source_url=c.get("source_url", ""),
+            harvested_at=c.get("harvested_at", ""),
+        )
+        for c in json.loads(r["curves"])
+    ]
+    return Motor(r["name"], r["rated_cells"], r["mass_g"], curves, json.loads(r["props"]))
 
 
 def get_frame(conn, fid: str) -> Frame:
@@ -117,7 +144,7 @@ def list_parts(conn) -> dict:
     motors = q("motors")
     for m in motors:
         m["props"] = json.loads(m["props"])
-        m["curve"] = json.loads(m["curve"])
+        m["curves"] = json.loads(m["curves"])
     frames = q("frames")
     for f in frames:
         f["coax"] = bool(f["coax"])
