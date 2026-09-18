@@ -10,19 +10,47 @@ Improvements over the original single-file model:
   operating point.
 - Flight time is computed from the pack current at the sagged hover point,
   not from a fixed nominal-voltage Wh/power estimate.
+- Pack chemistry sets the mid-discharge voltage the hover point is solved at,
+  the under-load floor, and the usable fraction of capacity (see CHEMISTRY).
+- Packs with a known continuous rating are checked against hover and
+  full-throttle draw; frames carry their own rigging mass by build class.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-NOMINAL_V = 3.7       # per-cell nominal (curve reference voltage)
-FULL_V = 4.2          # per-cell full charge
-CUTOFF_V = 3.3        # per-cell under-load cutoff
-USABLE_FRACTION = 0.80  # usable capacity to ~3.5V/cell resting
-BASE_RIGGING_G = 22.0   # fc/esc/wiring/rx/straps baseline
+NOMINAL_V = 3.7       # per-cell voltage assumed for a bench curve with no stated test_volts
+FULL_V = 4.2          # per-cell full charge (both chemistries)
+BASE_RIGGING_G = 22.0   # fc/esc/wiring/rx/straps baseline for a frame that states none
 COAX_FACTOR = 0.80      # coax stack thrust loss
 HOVER_CEILING_PCT = 85.0  # throttle ceiling used for spare-lift calc
+PACK_HOVER_HEADROOM = 0.80  # hover draw above this fraction of the pack rating earns a warning
+
+
+@dataclass(frozen=True)
+class Chemistry:
+    """Per-chemistry model constants.
+
+    These are conventions, not measurements: a LiPo is flown to ~3.5V/cell
+    resting and a Li-ion cell to ~3.0V, and each chemistry's mid-discharge
+    open-circuit voltage is where the hover point is solved. The calibration
+    loop (measured flight time against predicted) is what refines them.
+    """
+
+    nominal_v: float        # mid-discharge open-circuit V/cell; hover is solved here
+    cutoff_v: float         # under-load floor the sag model clamps to
+    usable_fraction: float  # of rated mAh, landing at a sane resting voltage
+
+
+CHEMISTRY: dict[str, Chemistry] = {
+    "lipo":   Chemistry(nominal_v=3.7, cutoff_v=3.3, usable_fraction=0.80),
+    "li-ion": Chemistry(nominal_v=3.6, cutoff_v=2.8, usable_fraction=0.90),
+}
+
+
+def chemistry_of(pack: "Pack") -> Chemistry:
+    return CHEMISTRY.get(pack.chemistry, CHEMISTRY["lipo"])
 
 # Curve columns
 C_THR, C_GRAMS, C_AMPS, C_WATTS = 0, 1, 2, 3
@@ -97,6 +125,7 @@ class Frame:
     motors: int
     coax: bool
     frame_class: str  # 'sub250' | 'freestyle' | 'heavy'
+    rigging_g: float = BASE_RIGGING_G  # fc/esc/wiring/rx/straps for this class of build
 
 
 @dataclass
@@ -107,6 +136,7 @@ class Pack:
     mass_g: float
     chemistry: str            # 'lipo' | 'li-ion'
     ir_mohm_per_cell: float   # internal resistance, milliohms per cell
+    max_a: float | None = None  # continuous discharge rating; None = unknown, no check
 
 
 @dataclass
@@ -167,14 +197,18 @@ class OperatingPoint:
 
 
 def operating_point(motor: Motor, pack: Pack, n_motors: int, throttle: float,
-                    coax: bool, soc_v: float = NOMINAL_V, iterations: int = 12,
+                    coax: bool, soc_v: float | None = None, iterations: int = 12,
                     prop: str | None = None) -> OperatingPoint:
     """Solve the sagged operating point at a given throttle.
 
     Fixed-point: guess per-cell voltage -> scale thrust/amps from the bench
     curve (measured at the sweep's own test voltage) -> pack current -> IR sag
-    -> new voltage.
+    -> new voltage. `soc_v` is the open-circuit V/cell; None means the pack
+    chemistry's mid-discharge voltage.
     """
+    chem = chemistry_of(pack)
+    if soc_v is None:
+        soc_v = chem.nominal_v
     pc = motor.curve_for(prop)
     pts = pc.points
     v_rated = pc.rated_volts(motor.rated_cells)
@@ -187,7 +221,7 @@ def operating_point(motor: Motor, pack: Pack, n_motors: int, throttle: float,
         per_motor_amps = amps(pts, throttle) * (v_cell * pack.cells / v_rated)
         i_total = n_motors * per_motor_amps
         v_pack = soc_v * pack.cells - i_total * ir_pack
-        v_cell_new = max(v_pack / pack.cells, CUTOFF_V)
+        v_cell_new = max(v_pack / pack.cells, chem.cutoff_v)
         if abs(v_cell_new - v_cell) < 1e-4:
             v_cell = v_cell_new
             break
@@ -223,14 +257,20 @@ class BuildResult:
     curve_source: str = ""
     test_volts: float | None = None
     test_volts_source: str = ""
+    rigging_g: float = 0.0
+    full_current_a: float = 0.0
+    pack_max_a: float | None = None
+    usable_fraction: float = 0.0
 
 
 def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
-             rigging_g: float = BASE_RIGGING_G, prop: str | None = None) -> BuildResult:
+             rigging_g: float | None = None, prop: str | None = None) -> BuildResult:
     n = frame.motors
     coax = frame.coax
+    chem = chemistry_of(pack)
     pc = motor.curve_for(prop)   # raises early on an unknown prop
-    auw = n * motor.mass_g + frame.mass_g + pack.mass_g + payload.mass_g + rigging_g
+    rig = frame.rigging_g if rigging_g is None else rigging_g
+    auw = n * motor.mass_g + frame.mass_g + pack.mass_g + payload.mass_g + rig
     cell_mismatch = abs(pack.cells - motor.rated_cells)
 
     # Max thrust / TWR at full charge (4.2V/cell) with sag
@@ -255,9 +295,9 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         hover_pt = operating_point(motor, pack, n, hover_thr, coax, prop=prop)
         can_hover = True
 
-    pack_wh = (pack.mah / 1000.0) * pack.cells * NOMINAL_V
+    pack_wh = (pack.mah / 1000.0) * pack.cells * chem.nominal_v
     if can_hover and hover_pt is not None and hover_pt.current_total_a > 0:
-        usable_ah = (pack.mah / 1000.0) * USABLE_FRACTION
+        usable_ah = (pack.mah / 1000.0) * chem.usable_fraction
         flight_min = usable_ah / hover_pt.current_total_a * 60.0
         hover_power = hover_pt.power_total_w
         hover_current = hover_pt.current_total_a
@@ -295,6 +335,21 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         warnings.append(f"Thrust-to-weight {twr:.1f}:1 — below the 2:1 floor for controllable flight.")
     if not sub250 and frame.frame_class == "sub250":
         warnings.append(f"AUW {auw:.0f}g breaks the 250g limit on a sub-250 frame.")
+    if pack.max_a is not None:
+        if can_hover and hover_current > pack.max_a:
+            warnings.append(
+                f"Hover draws {hover_current:.0f}A against a {pack.max_a:.0f}A pack — it cannot sustain hover."
+            )
+        elif can_hover and hover_current > PACK_HOVER_HEADROOM * pack.max_a:
+            warnings.append(
+                f"Hover draws {hover_current:.0f}A, {hover_current / pack.max_a:.0%} of the pack's "
+                f"{pack.max_a:.0f}A rating — expect heavy sag and a hot pack."
+            )
+        if full.current_total_a > pack.max_a:
+            warnings.append(
+                f"Full throttle draws {full.current_total_a:.0f}A against a {pack.max_a:.0f}A pack — "
+                "sag or low-voltage cutoff on punch-outs."
+            )
 
     return BuildResult(
         auw_g=auw, twr=twr, max_thrust_g=max_thrust,
@@ -306,4 +361,6 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         pack_chemistry=pack.chemistry, warnings=warnings,
         prop=pc.prop, curve_source=pc.source, test_volts=pc.test_volts,
         test_volts_source=pc.test_volts_source,
+        rigging_g=rig, full_current_a=full.current_total_a, pack_max_a=pack.max_a,
+        usable_fraction=chem.usable_fraction,
     )

@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db
 from .physics import simulate
@@ -44,9 +44,9 @@ class BuildRequest(SimulateRequest):
 
 
 class ActualRequest(BaseModel):
-    measured_auw_g: float | None = None
-    measured_hover_thr: float | None = None
-    measured_flight_min: float | None = None
+    measured_auw_g: float | None = Field(None, gt=0)
+    measured_hover_thr: float | None = Field(None, ge=0, le=100)   # % from OSD / blackbox
+    measured_flight_min: float | None = Field(None, gt=0)
     notes: str = ""
 
 
@@ -88,7 +88,7 @@ def builds(conn=Depends(get_conn)):
 def create_build(req: BuildRequest, conn=Depends(get_conn)):
     result = run_sim(conn, req)
     name = req.name.strip() or f"{req.motor_id} · {req.frame_id}"
-    return db.save_build(conn, name, req.motor_id, req.frame_id, req.pack_id, req.payload_id, result)
+    return db.save_build(conn, name, req.motor_id, req.frame_id, req.pack_id, req.payload_id, req.prop, result)
 
 
 @app.delete("/api/builds/{build_id}", status_code=204)
@@ -101,6 +101,8 @@ def remove_build(build_id: str, conn=Depends(get_conn)):
 def add_actual(build_id: str, req: ActualRequest, conn=Depends(get_conn)):
     if not conn.execute("SELECT 1 FROM builds WHERE id=?", (build_id,)).fetchone():
         raise HTTPException(404, "build not found")
+    if req.measured_auw_g is None and req.measured_hover_thr is None and req.measured_flight_min is None:
+        raise HTTPException(422, "log at least one measurement")
     return db.add_actual(conn, build_id, req.measured_auw_g, req.measured_hover_thr,
                          req.measured_flight_min, req.notes)
 

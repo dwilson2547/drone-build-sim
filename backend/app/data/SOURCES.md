@@ -83,6 +83,20 @@ Only the 7 hand-seeded FPV curves still carry `test_volts: null`. For those
 `PropCurve.rated_volts()` falls back to `rated_cells * NOMINAL_V` and the simulation result warns
 that current and flight time are approximate.
 
+## Duplicate sweeps across products ⚠ unverified
+
+Two pairs of T-Motor products publish byte-identical thrust tables on separate product pages
+(checked against the cached HTML; the Type column on each page names its own motor):
+
+| Pair | Mass difference | Curves |
+|---|---|---|
+| `tmotor_u8ii_kv85/100/150/190` ↔ `tmotor_u8lite_kv85/100/150/190` | U8 Lite ~30 g lighter | all 10 identical |
+| `tmotor_u8iipro_kv100` ↔ `tmotor_u8iilite_kv100` | Pro 34 g heavier | both identical |
+
+Whether the lite variants were benched separately and happen to match, or the vendor reused the
+table, is not knowable from the pages. The sim uses them as published. Treat a Lite-vs-II
+comparison as a mass-only comparison.
+
 ## Not harvested (and why)
 
 | Source | Status |

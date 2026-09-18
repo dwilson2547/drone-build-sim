@@ -20,19 +20,37 @@ Successor to the single-file React prototype kept in [`poc/drone-sim.jsx`](poc/d
   load, thrust scales with V², and the hover point is solved iteratively at the
   sagged voltage. This is why hover estimates now land higher (and more realistic)
   than the old model.
-- **Flight time** = 80% usable capacity ÷ hover current at the sagged operating point.
+- **Bench voltage:** each curve is scaled from the voltage it was actually measured at
+  (`test_volts`), stated on the datasheet or derived from its Power ÷ Current columns —
+  see `backend/app/data/SOURCES.md`. Only the hand-seeded FPV curves fall back to 3.7V/cell.
+- **Chemistry:** the pack's chemistry sets the mid-discharge voltage the hover point is
+  solved at (3.7V LiPo / 3.6V Li-ion), the under-load floor (3.3V / 2.8V) and the usable
+  fraction of capacity (80% / 90%). Conventions, refined by the calibration loop.
+- **Flight time** = usable capacity ÷ hover current at the sagged operating point.
+- **Pack rating:** packs with a known continuous rating (`max_a`) are checked against hover
+  draw (warn above 80%, fail above 100%) and full-throttle draw.
+- **Rigging** (FC/ESC/wiring/RX) is a per-frame mass by build class, not one constant; a
+  measured-AUW actual is the direct check on it.
 - Coax frames take a 0.80 stack-efficiency factor.
+
+Frame rigging, pack IR and pack ratings are generic archetype values flagged `⚠ unverified` in
+`backend/app/parts_data.py`; replace them with weighed / datasheet numbers as they come in.
 
 ## Calibration loop
 
-Save a build (`POST /api/builds`), then log measured reality against it
-(`POST /api/builds/{id}/actuals` — measured AUW, hover throttle from OSD/blackbox,
-real flight time). `GET /api/calibration` returns predicted-vs-measured error per
-entry. Next iteration: fit per-part correction factors from accumulated error.
+Save a build, then hit **LOG** on it in the saved-builds list to record what it really did
+(measured AUW, hover throttle from OSD/blackbox, real flight time). The calibration table
+underneath shows predicted minus measured for every logged number, coloured by relative
+error. Same thing over the API: `POST /api/builds`, `POST /api/builds/{id}/actuals`,
+`GET /api/calibration`. A saved build records the prop / bench sweep it was simulated on, so
+it can be re-simulated when the model changes. Next iteration: fit per-part correction
+factors from accumulated error.
 
 ## Stack
 
-- `backend/` — FastAPI + SQLite (`/data/build_sim.db` in the container)
+- `backend/` — FastAPI + SQLite (`/data/build_sim.db` in the container). The parts tables are
+  re-synced from `parts_data` on every boot, so a re-harvest or an edited pack shows up on
+  restart; saved builds and actuals are the only state the database owns.
 - `frontend/` — Vite + React SPA, nginx serves it and proxies `/api` to the backend
 
 ## Run locally (dev)
@@ -67,8 +85,8 @@ CONVENTIONS.md §6: `<project>/helm/<project>/`).
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/parts` | full parts library |
-| POST | `/api/simulate` | simulate a config `{motor_id, frame_id, pack_id, payload_id}` |
-| GET/POST | `/api/builds` | list / save builds |
+| POST | `/api/simulate` | simulate a config `{motor_id, frame_id, pack_id, payload_id, prop?}` — `prop` picks the bench sweep, default the motor's first |
+| GET/POST | `/api/builds` | list / save builds (same body as simulate plus `name`; the prop is stored) |
 | DELETE | `/api/builds/{id}` | delete build (cascades actuals) |
-| POST | `/api/builds/{id}/actuals` | log measured AUW / hover throttle / flight time |
+| POST | `/api/builds/{id}/actuals` | log measured AUW / hover throttle (0–100) / flight time; at least one required |
 | GET | `/api/calibration` | predicted-vs-measured error report |
