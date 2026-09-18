@@ -14,7 +14,9 @@ the provenance is the only way to tell a benched number from a guessed one.
 | Curves | 135 |
 | Data points | 2,326 |
 | Motors with more than one prop curve | 46 |
-| Curves with a stated bench voltage | 99 / 135 (73%) |
+| Curves with a stated bench voltage (`test_volts_source: stated`) | 99 / 135 (73%) |
+| Curves with a derived bench voltage (`test_volts_source: derived-w-over-a`) | 29 / 135 (21%) |
+| Curves with no bench voltage (the 7 `seed` entries) | 7 / 135 (5%) |
 
 By source:
 
@@ -57,9 +59,29 @@ Both errors push flight-time estimates the same way. Treat seed entries as indic
 22.2V where the sweep ran at 24.0V inflates every current by ~8%, straight through to flight
 time.
 
-27% of T-Motor sweeps have no Voltage column on the page. Those keep `test_volts: null`, and
-`PropCurve.rated_volts()` falls back to `rated_cells * NOMINAL_V` — with a warning on the
-simulation result so the assumption is visible rather than silent.
+29 of the 128 T-Motor sweeps (the U8II, U8 Lite and U10II pages) have no Voltage column. They
+do have Power and Current for every row, and on the 99 sweeps that publish all three columns,
+Power ÷ Current reproduces the stated voltage with 0.0% median error (worst −9.7%), so the
+vendor's Power column is V × A. For those 29 the harvester records `test_volts` as the median of
+W/A across the sweep and marks it `test_volts_source: "derived-w-over-a"`; sweeps with a real
+column are marked `"stated"`. The derivation is refused, leaving `null`, if W/A varies more than
+15% across a sweep — a real bench voltage is nearly flat, and a wide spread would mean the
+columns are not V × A on that page.
+
+The derived values land where a bench would: 24.0V / 48.0V (4.0V/cell) on the U8 family, and
+32.5 / 40.4 / 48.6V on the U10II, which T-Motor sweeps on three pack sizes. Two consequences
+worth knowing:
+
+- The U10II's repeated props are now labelled by voltage (`G29*9.5” CF @33V`, `@40V`, `@49V`)
+  instead of `#1/#2/#3`.
+- `tmotor_u8ii_kv150` and `tmotor_u8lite_kv150` are tagged `rated_cells: 6` from the first sweep
+  on the page, but their `P22*6.6” CF` sweep derives to 48V — that one was a 12S bench. The sim
+  scales from the curve's own `test_volts`, so this is handled; it would not have been under the
+  old `rated_cells × 3.7V` fallback.
+
+Only the 7 hand-seeded FPV curves still carry `test_volts: null`. For those
+`PropCurve.rated_volts()` falls back to `rated_cells * NOMINAL_V` and the simulation result warns
+that current and flight time are approximate.
 
 ## Not harvested (and why)
 

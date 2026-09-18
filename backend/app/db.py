@@ -109,6 +109,7 @@ def get_motor(conn, mid: str) -> Motor:
             prop=c["prop"],
             points=[tuple(p) for p in c["points"]],
             test_volts=c.get("test_volts"),
+            test_volts_source=c.get("test_volts_source", ""),
             source=c.get("source", ""),
             source_url=c.get("source_url", ""),
             harvested_at=c.get("harvested_at", ""),

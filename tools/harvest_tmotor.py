@@ -20,6 +20,8 @@ Run it, read the diff it prints, commit the JSON if the diff looks right:
     python tools/harvest_tmotor.py --no-cache      # force refetch
 
 Output: backend/app/data/motors.json (merged; `source: "seed"` motors survive).
+Each curve carries `test_volts` plus `test_volts_source` ('stated' from a Voltage
+column, or 'derived-w-over-a' recombined from the Power and Current columns).
 """
 
 from __future__ import annotations
@@ -232,6 +234,32 @@ def parse_sweeps(soup) -> list[tuple[str, str, list[dict]]]:
     return sweeps
 
 
+def bench_volts(pts: list[dict]) -> tuple[float | None, str]:
+    """The pack voltage a sweep was measured at, and where that number came from.
+
+    'stated'            the page has a Voltage column; median of it.
+    'derived-w-over-a'  no Voltage column, but every row has Power and Current,
+                        and the vendor's Power column is V*A (on the 99 sweeps
+                        that state both, W/A reproduces the stated voltage with
+                        0.0% median error). The derived value is the vendor's
+                        own measurement recombined, not a typical-setup guess:
+                        it lands on 24.0/48.0V (4.0V/cell) for the U8 family
+                        and on the 32.5/40.4/48.6V pack ladder for the U10II.
+    ''                  neither; caller falls back to rated_cells * NOMINAL_V.
+    """
+    volts = [p["volts"] for p in pts if "volts" in p]
+    if volts:
+        return round(statistics.median(volts), 2), "stated"
+    ratios = [p["watts"] / p["amps"] for p in pts if p.get("amps", 0) > 0 and "watts" in p]
+    if len(ratios) >= 3:
+        med = statistics.median(ratios)
+        # A real bench voltage is nearly flat across the sweep. A wide spread
+        # means the columns are not V*A on this page; refuse rather than guess.
+        if med > 0 and (max(ratios) - min(ratios)) / med <= 0.15:
+            return round(med, 2), "derived-w-over-a"
+    return None, ""
+
+
 def pick_cells(test_volts: float | None, lo: int | None, hi: int | None) -> int | None:
     """Which cell count was the sweep actually run at?
 
@@ -270,8 +298,7 @@ def build_motors(url: str, html: str, harvested_at: str) -> list[dict]:
         model = norm(KV_RE.sub("", type_raw)).strip("-_ ") or "motor"
         pts.sort(key=lambda p: p["throttle_pct"])
 
-        volts = [p["volts"] for p in pts if "volts" in p]
-        test_volts = round(statistics.median(volts), 2) if volts else None
+        test_volts, volts_source = bench_volts(pts)
 
         spec = specs.get(kv, {})
         cells = pick_cells(test_volts, spec.get("cells_min"), spec.get("cells_max"))
@@ -290,6 +317,7 @@ def build_motors(url: str, html: str, harvested_at: str) -> list[dict]:
         entry["curves"].append({
             "prop": prop_raw,
             "test_volts": test_volts,
+            "test_volts_source": volts_source,
             "source": "tmotor-html",
             "source_url": url,
             "harvested_at": harvested_at,
@@ -364,9 +392,15 @@ def diff_report(old: list[dict], new: list[dict]) -> list[str]:
             lines.append(f"  + {mid}: new curve for {p}")
         for p in sorted(ca.keys() - cb.keys()):
             lines.append(f"  - {mid}: dropped curve for {p}")
+        va = {c["prop"]: (c.get("test_volts"), c.get("test_volts_source", "")) for c in a["curves"]}
+        vb = {c["prop"]: (c.get("test_volts"), c.get("test_volts_source", "")) for c in b["curves"]}
         for p in sorted(ca.keys() & cb.keys()):
             if ca[p] != cb[p]:
                 lines.append(f"  ~ {mid}: curve revised for {p}")
+            # value moved, or the recorded provenance changed (an absent marker
+            # on pre-provenance data gaining one is not a change worth a line)
+            if va[p][0] != vb[p][0] or (va[p][1] and va[p][1] != vb[p][1]):
+                lines.append(f"  ~ {mid}: bench voltage for {p}: {va[p][0]} -> {vb[p][0]} ({vb[p][1] or 'unknown'})")
     return lines
 
 
@@ -413,6 +447,15 @@ def main() -> int:
     existing = json.loads(DATA.read_text()) if DATA.exists() else []
     seeded = [m for m in existing if all(c.get("source") == "seed" for c in m["curves"])]
     prior_scraped = [m for m in existing if m not in seeded]
+
+    # A curve whose points are unchanged since the last harvest keeps its old
+    # harvested_at: regenerating from .harvest-cache does not re-observe the site.
+    prior_by_points = {(m["id"], json.dumps(c["points"])): c for m in prior_scraped for c in m["curves"]}
+    for m in scraped:
+        for c in m["curves"]:
+            old = prior_by_points.get((m["id"], json.dumps(c["points"])))
+            if old and old.get("harvested_at"):
+                c["harvested_at"] = old["harvested_at"]
 
     merged = seeded + sorted(scraped, key=lambda m: m["id"])
 

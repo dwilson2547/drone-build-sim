@@ -40,11 +40,17 @@ class PropCurve:
     3.7V/cell `NOMINAL_V` assumes), and getting it wrong biases every current —
     and therefore every flight-time — estimate. None means "unknown, fall back
     to the old rated_cells * NOMINAL_V assumption".
+
+    `test_volts_source` says where that number came from: "stated" (a Voltage
+    column on the datasheet) or "derived-w-over-a" (no Voltage column; the
+    vendor's Power and Current columns recombined, W/A, which reproduces the
+    stated voltage to ~0% on the sweeps that have both). Empty when unknown.
     """
 
     prop: str
     points: list[Point]
     test_volts: float | None = None
+    test_volts_source: str = ""   # stated | derived-w-over-a | ""
     source: str = "seed"          # seed | tmotor-html | iflight-datasheet
     source_url: str = ""
     harvested_at: str = ""
@@ -216,6 +222,7 @@ class BuildResult:
     prop: str = ""
     curve_source: str = ""
     test_volts: float | None = None
+    test_volts_source: str = ""
 
 
 def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
@@ -298,4 +305,5 @@ def simulate(motor: Motor, frame: Frame, pack: Pack, payload: Payload,
         sub250=sub250, frame_class=frame.frame_class,
         pack_chemistry=pack.chemistry, warnings=warnings,
         prop=pc.prop, curve_source=pc.source, test_volts=pc.test_volts,
+        test_volts_source=pc.test_volts_source,
     )

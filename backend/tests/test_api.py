@@ -65,7 +65,29 @@ def test_harvested_motors_carry_provenance(client):
             assert c["source"] == "tmotor-html"
             assert c["source_url"].startswith("https://store.tmotor.com/")
             assert c["harvested_at"]
-            assert c["test_volts"] is None or c["test_volts"] > 0
+            # Every T-Motor page publishes Power and Current, so a bench voltage
+            # is always recoverable; None would mean the harvester regressed.
+            assert c["test_volts"] > 0, f"{m['id']}/{c['prop']} lost its bench voltage"
+            assert c["test_volts_source"] in ("stated", "derived-w-over-a")
+            # W/A must agree with whatever voltage is recorded, stated or derived.
+            ratios = [pt[3] / pt[2] for pt in c["points"] if pt[2] > 0]
+            med = sorted(ratios)[len(ratios) // 2]
+            assert abs(med - c["test_volts"]) / c["test_volts"] < 0.12, \
+                f"{m['id']}/{c['prop']}: W/A {med:.1f} vs test_volts {c['test_volts']}"
+
+
+def test_simulate_reports_voltage_provenance(client):
+    parts = client.get("/api/parts").json()
+    derived = next((m, c) for m in parts["motors"] for c in m["curves"]
+                   if c.get("test_volts_source") == "derived-w-over-a")
+    m, c = derived
+    body = client.post("/api/simulate", json={
+        "motor_id": m["id"], "frame_id": "y6_450", "pack_id": "lipo_6s_5000",
+        "payload_id": "none", "prop": c["prop"],
+    }).json()
+    assert body["test_volts"] == c["test_volts"]
+    assert body["test_volts_source"] == "derived-w-over-a"
+    assert not any("Bench voltage" in w for w in body["warnings"])
 
 
 def test_simulate(client):
