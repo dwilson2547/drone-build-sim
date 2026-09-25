@@ -2,7 +2,7 @@ name: build-sim
 
 services:
   backend:
-    image: ghcr.io/dwilson2547/build-sim-backend:latest
+    image: dwilson2547/build-sim-backend:latest
     build: ./backend
     restart: unless-stopped
     volumes:
@@ -11,7 +11,7 @@ services:
       BUILD_SIM_DB: /data/build_sim.db
 
   frontend:
-    image: ghcr.io/dwilson2547/build-sim-frontend:latest
+    image: dwilson2547/build-sim-frontend:latest
     build: ./frontend
     restart: unless-stopped
     ports:

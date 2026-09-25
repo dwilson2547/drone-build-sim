@@ -71,14 +71,22 @@ docker compose down
 ```
 
 The compose file pins publishable image names
-(`ghcr.io/dwilson2547/build-sim-{backend,frontend}`) so the same file is the single
+(`dwilson2547/build-sim-{backend,frontend}` on Docker Hub) so the same file is the single
 point of contact: `docker compose build && docker compose push` to publish updates.
 
-## Promotion path
+## Cluster deploy
 
-Local compose first; when stable, promote to the home cluster via ArgoCD —
-see `infra/cluster-config/` and the `k8s-argocd` skill (helm chart per
-CONVENTIONS.md §6: `<project>/helm/<project>/`).
+Runs on the home cluster at http://build-sim.local via ArgoCD
+(`infra/cluster-config/argocd/build-sim.yaml`, chart `helm/build-sim/`, namespace `build-sim`).
+Images track `:latest` with `pullPolicy: Always`, so publishing an update is:
+
+```sh
+docker compose build && docker compose push
+kubectl -n build-sim rollout restart deploy/build-sim-backend deploy/build-sim-frontend
+```
+
+The SQLite database lives on the `build-sim-data` PVC (`nfs-dataset`); the backend runs one
+replica with a `Recreate` strategy so two pods never write it at once.
 
 ## API
 

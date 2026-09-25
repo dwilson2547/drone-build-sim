@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-sim-backend
+  labels:
+    app: build-sim-backend
+spec:
+  replicas: 1
+  # SQLite on a RWO volume: never run two writers across a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: build-sim-backend
+  template:
+    metadata:
+      labels:
+        app: build-sim-backend
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.image.registry }}/build-sim-backend:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: BUILD_SIM_DB
+              value: /data/build_sim.db
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: build-sim-data
+---
+# Named "backend" because the frontend's nginx.conf proxies /api to http://backend:8000.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: build-sim-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

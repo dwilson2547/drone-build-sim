@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-sim-frontend
+  labels:
+    app: build-sim-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: build-sim-frontend
+  template:
+    metadata:
+      labels:
+        app: build-sim-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: "{{ .Values.image.registry }}/build-sim-frontend:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-sim-frontend
+spec:
+  selector:
+    app: build-sim-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: build-sim
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: build-sim-frontend
+                port:
+                  name: http

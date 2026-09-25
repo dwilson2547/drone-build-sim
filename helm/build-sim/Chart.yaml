@@ -1,0 +1,6 @@
+apiVersion: v2
+name: build-sim
+description: Drone build design tool (FastAPI + React)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

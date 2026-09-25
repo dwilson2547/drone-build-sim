@@ -1,0 +1,31 @@
+image:
+  registry: dwilson2547
+  tag: latest
+  pullPolicy: Always
+
+ingress:
+  host: build-sim.local
+  className: nginx
+
+# SQLite: saved builds + actuals. Parts tables are re-synced from code on boot.
+data:
+  storageClass: nfs-dataset
+  size: 1Gi
+
+backend:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+frontend:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
